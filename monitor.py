@@ -3,8 +3,8 @@
 """
 币安带单员【熬鹰资本】(Portfolio ID: 5075281354358777856) 云端/本地双用监控程序
 功能：
-1. 自动检测最新开平仓操作，并实时推送到 Telegram
-2. 内置轻量级 HTTP 健康检查服务，完美适配 Railway 等云端平台 24 小时挂机
+1. 自动探测可用的币安带单操作记录/持仓接口，实时推送开平仓通知到 Telegram
+2. 内置轻量级 HTTP 健康检查服务，适配 Railway 等云端平台 24 小时挂机
 """
 
 import json
@@ -28,17 +28,29 @@ CONFIG_FILE = os.path.join(BASE_DIR, "config.ini")
 STATE_FILE = os.path.join(BASE_DIR, "monitor_state.json")
 
 DEFAULT_PORTFOLIO_ID = "5075281354358777856"
-ORDER_HISTORY_URL = (
-    "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/order-history"
-)
-POSITIONS_URL = (
-    "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/positions"
-)
+
+# 候选接口列表（兼容币安带单前端不同版本的接口路径）
+ORDER_ENDPOINTS = [
+    ("POST", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history"),
+    ("POST", "https://www.binance.com/bapi/futures/v1/public/future/copy-trade/lead-portfolio/order-history"),
+    ("POST", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/trade-history"),
+    ("POST", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/trade-history"),
+    ("POST", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/position-history"),
+    ("POST", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/position-history"),
+    ("GET", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history"),
+]
+
+POSITION_ENDPOINTS = [
+    ("GET", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-data/positions"),
+    ("GET", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/positions"),
+    ("POST", "https://www.binance.com/bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/positions"),
+]
 
 STATUS_INFO = {
     "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     "last_check": "初始化中...",
     "status": "starting",
+    "endpoint": "探测中...",
     "orders_pushed": 0,
     "last_error": "",
 }
@@ -54,9 +66,10 @@ class HealthHandler(BaseHTTPRequestHandler):
         html = (
             "<!DOCTYPE html><html><head><meta charset='utf-8'>"
             "<title>熬鹰资本监控状态</title></head>"
-            "<body style='font-family:sans-serif;max-width:520px;margin:40px auto;line-height:1.6;'>"
+            "<body style='font-family:sans-serif;max-width:560px;margin:40px auto;line-height:1.6;'>"
             "<h2>✅ 【熬鹰资本】币安带单监控运行中</h2>"
             f"<p><b>运行状态：</b>{STATUS_INFO['status']}</p>"
+            f"<p><b>数据接口：</b><code>{STATUS_INFO['endpoint']}</code></p>"
             f"<p><b>启动时间：</b>{STATUS_INFO['started_at']} (UTC)</p>"
             f"<p><b>最近检测：</b>{STATUS_INFO['last_check']} (UTC)</p>"
             f"<p><b>累计推送新单：</b>{STATUS_INFO['orders_pushed']} 条</p>"
@@ -151,7 +164,6 @@ def get_proxies(cfg: dict):
 
 
 def auto_detect_chat_id(token: str, proxies=None, endless: bool = False) -> str:
-    """自动通过 Telegram getUpdates 获取用户的 Chat ID"""
     url = f"https://api.telegram.org/bot{token}/getUpdates"
     print("请在 Telegram 中打开你创建的机器人，点击【开始 / Start】并随便发送一条消息（例如 1）...")
     STATUS_INFO["status"] = "等待你在 Telegram 给机器人发消息以完成绑定..."
@@ -185,7 +197,6 @@ def auto_detect_chat_id(token: str, proxies=None, endless: bool = False) -> str:
 
 
 def prepare_config(cfg: dict) -> dict:
-    """兼容云端无界面环境与本地双击交互"""
     token = cfg.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = cfg.get("TELEGRAM_CHAT_ID", "").strip()
     proxies = get_proxies(cfg)
@@ -275,6 +286,7 @@ def build_headers(cfg: dict) -> dict:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         ),
+        "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "Origin": "https://www.binance.com",
         "Referer": f"https://www.binance.com/zh-CN/copy-trading/lead-details/{pid}",
@@ -288,63 +300,102 @@ def build_headers(cfg: dict) -> dict:
     return headers
 
 
-def fetch_order_history(cfg: dict, page_size: int = 20) -> list:
-    payload = {
-        "portfolioId": cfg["PORTFOLIO_ID"],
-        "pageNumber": 1,
-        "pageSize": page_size,
-    }
-    resp = requests.post(
-        ORDER_HISTORY_URL,
-        headers=build_headers(cfg),
-        json=payload,
-        timeout=12,
-        proxies=get_proxies(cfg),
-    )
+def request_binance(cfg: dict, method: str, url: str, page_size: int = 20) -> dict:
+    pid = cfg["PORTFOLIO_ID"]
+    headers = build_headers(cfg)
+    proxies = get_proxies(cfg)
+
+    if method == "POST":
+        payload = {"portfolioId": pid, "pageNumber": 1, "pageSize": page_size}
+        resp = requests.post(url, headers=headers, json=payload, timeout=12, proxies=proxies)
+    else:
+        params = {"portfolioId": pid, "pageNumber": 1, "pageSize": page_size}
+        resp = requests.get(url, headers=headers, params=params, timeout=12, proxies=proxies)
+
     if resp.status_code == 451:
         raise RuntimeError("HTTP 451: 当前云服务器地区受币安限制，请在 Settings -> Region 切换为 EU West (Amsterdam)！")
     resp.raise_for_status()
-    res = resp.json()
-    if not res.get("success", False):
-        raise RuntimeError(f"币安操作记录接口返回异常: {res}")
-    data = res.get("data") or {}
+    return resp.json()
+
+
+def extract_list(res_json: dict) -> list:
+    data = res_json.get("data")
     if isinstance(data, list):
         return data
-    return data.get("list") or data.get("rows") or []
+    if isinstance(data, dict):
+        for key in ("list", "rows", "records", "orders", "trades", "positions"):
+            val = data.get(key)
+            if isinstance(val, list):
+                return val
+    return []
 
 
-def fetch_positions(cfg: dict) -> dict:
-    resp = requests.get(
-        POSITIONS_URL,
-        headers=build_headers(cfg),
-        params={"portfolioId": cfg["PORTFOLIO_ID"]},
-        timeout=12,
-        proxies=get_proxies(cfg),
-    )
-    if resp.status_code == 451:
-        raise RuntimeError("HTTP 451: 当前云服务器地区受币安限制，请在 Settings -> Region 切换为 EU West (Amsterdam)！")
-    resp.raise_for_status()
-    res = resp.json()
-    if not res.get("success", False):
-        raise RuntimeError(f"币安持仓接口返回异常: {res}")
-    raw_list = res.get("data") or []
+def parse_positions_list(raw_list: list) -> dict:
     positions = {}
     for item in raw_list:
-        amt = float(item.get("positionAmount", 0))
+        if not isinstance(item, dict):
+            continue
+        raw_amt = item.get("positionAmount")
+        if raw_amt is None:
+            raw_amt = item.get("positionAmt")
+        if raw_amt is None:
+            raw_amt = item.get("amount", 0)
+        try:
+            amt = float(raw_amt or 0)
+        except Exception:
+            continue
         if amt == 0:
             continue
+
         symbol = item.get("symbol", "UNKNOWN")
-        pos_side = item.get("positionSide", "BOTH")
+        pos_side = (item.get("positionSide") or "BOTH").upper()
         direction = ("LONG" if amt > 0 else "SHORT") if pos_side == "BOTH" else pos_side
+        entry_price = item.get("entryPrice") or item.get("avgPrice") or 0
+        upnl = item.get("unrealizedProfit") or item.get("unRealizedProfit") or item.get("pnl") or 0
+
         positions[f"{symbol}_{direction}"] = {
             "symbol": symbol,
             "direction": direction,
             "amount": abs(amt),
-            "entryPrice": float(item.get("entryPrice", 0)),
+            "entryPrice": float(entry_price or 0),
             "leverage": item.get("leverage", "?"),
-            "unrealizedProfit": float(item.get("unrealizedProfit", 0)),
+            "unrealizedProfit": float(upnl or 0),
         }
     return positions
+
+
+def discover_endpoint(cfg: dict) -> tuple:
+    """
+    自动探测当前可用的币安带单接口：
+    优先探测操作/成交历史接口；若不可用则自动切换为实时持仓变动监控。
+    返回: (mode, method, url, initial_data)
+    """
+    errors = []
+
+    # 1. 优先尝试操作记录 / 成交记录接口
+    for method, url in ORDER_ENDPOINTS:
+        try:
+            res = request_binance(cfg, method, url, page_size=20)
+            if res.get("success") is True:
+                items = extract_list(res)
+                return ("order_history", method, url, items)
+            errors.append(f"{url.split('/')[-1]}: code={res.get('code')} msg={res.get('message')}")
+        except Exception as e:
+            errors.append(f"{url.split('/')[-1]}: {str(e)[:80]}")
+
+    # 2. 若操作记录接口全部不可用，自动尝试当前持仓接口
+    for method, url in POSITION_ENDPOINTS:
+        try:
+            res = request_binance(cfg, method, url, page_size=50)
+            if res.get("success") is True:
+                raw_list = extract_list(res)
+                positions = parse_positions_list(raw_list)
+                return ("positions", method, url, positions)
+            errors.append(f"{url.split('/')[-1]}: code={res.get('code')} msg={res.get('message')}")
+        except Exception as e:
+            errors.append(f"{url.split('/')[-1]}: {str(e)[:80]}")
+
+    raise RuntimeError("所有候选接口均未通过探测 | " + " ; ".join(errors[:4]))
 
 
 def format_action(side: str, position_side: str) -> str:
@@ -374,22 +425,66 @@ def format_ts(ts) -> str:
 
 
 def order_uid(order: dict) -> str:
-    oid = order.get("orderId") or order.get("id") or order.get("tranId")
-    qty = order.get("executedQty") or order.get("origQty") or order.get("qty") or ""
+    oid = order.get("orderId") or order.get("id") or order.get("tranId") or order.get("tradeId")
+    qty = (
+        order.get("executedQty")
+        or order.get("origQty")
+        or order.get("qty")
+        or order.get("closedVolume")
+        or order.get("volume")
+        or ""
+    )
     if oid:
         return f"{oid}_{qty}"
-    return (
-        f"{order.get('symbol')}_{order.get('side')}_"
-        f"{order.get('positionSide')}_{order.get('orderTime')}_{qty}"
-    )
+    t_val = order.get("updateTime") or order.get("orderTime") or order.get("time") or order.get("closed") or ""
+    return f"{order.get('symbol')}_{order.get('side')}_{order.get('positionSide')}_{t_val}_{qty}"
 
 
 def format_order_msg(order: dict) -> str:
     symbol = order.get("symbol", "UNKNOWN")
+
+    # 兼容 position-history（历史持仓平仓记录）格式
+    if "avgClosePrice" in order or "closingPnl" in order:
+        pos_side = (order.get("positionSide") or "").upper()
+        action_str = "💰 平多 (Close Long)" if pos_side == "LONG" else (
+            "💰 平空 (Close Short)" if pos_side == "SHORT" else f"💰 平仓 ({pos_side})"
+        )
+        qty = order.get("closedVolume") or order.get("maxOpenInterest") or order.get("volume") or "?"
+        open_p = order.get("avgCost") or order.get("entryPrice") or "?"
+        close_p = order.get("avgClosePrice") or order.get("closePrice") or "?"
+        t_str = format_ts(order.get("closed") or order.get("updateTime") or order.get("time"))
+        lines = [
+            "<b>【熬鹰资本 · 平仓记录通知】</b>",
+            f"动作：{action_str}",
+            f"合约：<code>{symbol}</code>",
+            f"平仓数量：{qty}",
+            f"开仓均价：{open_p}",
+            f"平仓均价：{close_p}",
+        ]
+        pnl = order.get("closingPnl") or order.get("realizedPnl") or order.get("pnl")
+        if pnl is not None:
+            try:
+                pnl_val = float(pnl)
+                emoji = "📈" if pnl_val > 0 else "📉"
+                lines.append(f"实现盈亏：{emoji} <b>{pnl_val:+.2f} USDT</b>")
+            except Exception:
+                pass
+        lines.append(f"时间：{t_str} (UTC)")
+        return "\n".join(lines)
+
+    # 标准订单 / 成交记录格式
     action_str = format_action(order.get("side"), order.get("positionSide"))
-    price = order.get("avgPrice") or order.get("price") or "市价"
-    qty = order.get("executedQty") or order.get("origQty") or order.get("qty") or "?"
-    t_str = format_ts(order.get("updateTime") or order.get("orderTime") or order.get("time"))
+    price = order.get("avgPrice") or order.get("price") or order.get("dealPrice") or "市价"
+    qty = (
+        order.get("executedQty")
+        or order.get("origQty")
+        or order.get("qty")
+        or order.get("dealVolume")
+        or "?"
+    )
+    t_str = format_ts(
+        order.get("updateTime") or order.get("orderTime") or order.get("time") or order.get("transactTime")
+    )
 
     lines = [
         "<b>【熬鹰资本 · 最新操作通知】</b>",
@@ -398,7 +493,7 @@ def format_order_msg(order: dict) -> str:
         f"成交数量：{qty}",
         f"成交均价：{price}",
     ]
-    pnl = order.get("realizedPnl") or order.get("pnl")
+    pnl = order.get("realizedPnl") or order.get("pnl") or order.get("realizedProfit")
     if pnl is not None:
         try:
             pnl_val = float(pnl)
@@ -425,7 +520,7 @@ def diff_positions(old_pos: dict, new_pos: dict) -> list:
                 f"方向：{side_cn} ({curr['leverage']}x)",
                 f"持仓数量：{curr['amount']}",
                 f"开仓均价：{curr['entryPrice']}",
-                f"时间：{now_str}",
+                f"时间：{now_str} (UTC)",
             ]
             msgs.append("\n".join(lines))
         elif prev is not None and curr is None:
@@ -436,7 +531,7 @@ def diff_positions(old_pos: dict, new_pos: dict) -> list:
                 f"原方向：{side_cn}",
                 f"平仓前数量：{prev['amount']}",
                 f"原开仓均价：{prev['entryPrice']}",
-                f"时间：{now_str}",
+                f"时间：{now_str} (UTC)",
             ]
             msgs.append("\n".join(lines))
         elif prev is not None and curr is not None:
@@ -449,7 +544,7 @@ def diff_positions(old_pos: dict, new_pos: dict) -> list:
                     f"合约：<code>{curr['symbol']}</code> ({side_cn})",
                     f"数量变化：{prev['amount']} ➔ <b>{curr['amount']}</b> ({diff_amt:+g})",
                     f"最新均价：{curr['entryPrice']}",
-                    f"时间：{now_str}",
+                    f"时间：{now_str} (UTC)",
                 ]
                 msgs.append("\n".join(lines))
     return msgs
@@ -471,39 +566,45 @@ def main():
     old_positions = state.get("positions", {})
     first_boot = not os.path.exists(STATE_FILE)
 
-    print(f"正在连接币安接口，初始化【熬鹰资本 ({cfg['PORTFOLIO_ID']})】监控...")
+    print(f"正在自动探测币安接口，初始化【熬鹰资本 ({cfg['PORTFOLIO_ID']})】监控...")
 
     mode = "order_history"
+    active_method = "POST"
+    active_url = ORDER_ENDPOINTS[0][1]
+
     try:
-        orders = fetch_order_history(cfg, page_size=20)
-        if first_boot:
-            for item in orders:
-                uid = order_uid(item)
-                if uid not in seen_set:
-                    seen_set.add(uid)
-                    seen_list.append(uid)
-            state["seen_orders"] = seen_list
-            save_state(state)
-
-        if len(orders) == 0:
-            pos = fetch_positions(cfg)
-            if pos:
-                mode = "positions"
-                old_positions = pos
-                state["positions"] = pos
-                save_state(state)
-
+        mode, active_method, active_url, initial_data = discover_endpoint(cfg)
+        short_ep = active_url.split("/copy-trade/")[-1]
+        STATUS_INFO["endpoint"] = f"{active_method} {short_ep}"
         STATUS_INFO["status"] = "正常运行中 (24/7 云端监控)"
         STATUS_INFO["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         STATUS_INFO["last_error"] = ""
 
+        if mode == "order_history":
+            if first_boot:
+                for item in initial_data:
+                    uid = order_uid(item)
+                    if uid not in seen_set:
+                        seen_set.add(uid)
+                        seen_list.append(uid)
+                state["seen_orders"] = seen_list
+                save_state(state)
+            mode_desc = "操作/成交记录实时追踪"
+        else:
+            old_positions = initial_data
+            state["positions"] = initial_data
+            save_state(state)
+            mode_desc = "实时持仓变动追踪"
+
         startup_lines = [
             "✅ <b>【熬鹰资本】云端监控已成功启动！</b>",
             f"带单账号 ID：<code>{cfg['PORTFOLIO_ID']}</code>",
-            f"监控频率：每 {int(poll_interval)} 秒自动检测一次",
+            f"监控模式：{mode_desc}",
+            f"接入接口：<code>{short_ep}</code>",
+            f"检测频率：每 {int(poll_interval)} 秒自动检测一次",
             "后续只要他有开多、开空、加减仓或平仓操作，这里会第一时间通知你。",
         ]
-        print("监控已成功启动！")
+        print(f"监控已成功启动！接入接口: {short_ep}")
         send_telegram(cfg, "\n".join(startup_lines))
 
     except Exception as e:
@@ -511,7 +612,7 @@ def main():
         STATUS_INFO["last_error"] = str(e)[:300]
         err_lines = [
             "⚠️ <b>【熬鹰资本监控】首次连接币安失败</b>",
-            f"错误详情：<code>{str(e)[:220]}</code>",
+            f"错误详情：<code>{str(e)[:280]}</code>",
         ]
         print(f"启动检测异常: {e}")
         send_telegram(cfg, "\n".join(err_lines))
@@ -521,12 +622,16 @@ def main():
     while True:
         try:
             STATUS_INFO["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if mode == "order_history":
-                orders = fetch_order_history(cfg, page_size=20)
-                consecutive_errors = 0
-                STATUS_INFO["status"] = "正常运行中 (24/7 云端监控)"
-                STATUS_INFO["last_error"] = ""
+            res = request_binance(cfg, active_method, active_url, page_size=20 if mode == "order_history" else 50)
+            if res.get("success") is not True:
+                raise RuntimeError(f"接口返回异常: code={res.get('code')} msg={res.get('message')}")
 
+            consecutive_errors = 0
+            STATUS_INFO["status"] = "正常运行中 (24/7 云端监控)"
+            STATUS_INFO["last_error"] = ""
+
+            if mode == "order_history":
+                orders = extract_list(res)
                 new_msgs = []
                 for order in reversed(orders):
                     if "executedQty" in order and float(order.get("executedQty") or 0) <= 0:
@@ -546,11 +651,7 @@ def main():
                     state["seen_orders"] = seen_list
                     save_state(state)
             else:
-                new_positions = fetch_positions(cfg)
-                consecutive_errors = 0
-                STATUS_INFO["status"] = "正常运行中 (持仓变动监控)"
-                STATUS_INFO["last_error"] = ""
-
+                new_positions = parse_positions_list(extract_list(res))
                 new_msgs = diff_positions(old_positions, new_positions)
                 for m in new_msgs:
                     print(f"[{datetime.now().strftime('%H:%M:%S')}] 推送持仓变动:\n{m}\n")
