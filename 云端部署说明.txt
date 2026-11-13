@@ -1,0 +1,18 @@
+====================================================
+   【熬鹰资本】免费云端 24 小时挂机托管教程（免信用卡）
+====================================================
+
+为什么要选德国法兰克福 (Frankfurt) 节点？
+- 币安官方接口屏蔽了美国和新加坡服务器 IP（会返回 451 错误），
+  而 Render 免费版直接提供【德国法兰克福 (Frankfurt)】节点，
+  既免信用卡完全免费，又能顺畅访问币安！
+
+部署只需 3 步（全程浏览器点鼠标，不用装任何软件）：
+1. 在 Telegram 找 @BotFather 发送 /newbot 获取 TELEGRAM_BOT_TOKEN，
+   再找 @userinfobot 点击 Start 获取你的数字 ID（TELEGRAM_CHAT_ID）。
+2. 在 GitHub 网页新建一个仓库，把本压缩包解压后的所有文件拖进去上传。
+3. 在 Render.com 用 GitHub 登录 -> New -> Web Service -> 选择你的仓库，
+   地区选 Frankfurt (EU Central)，实例选 Free ($0/month)，
+   填入 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID 两个环境变量，点击 Deploy。
+4. 最后在 UptimeRobot.com 免费添加一条监控，每 5 分钟访问一次 Render 给你的网址，
+   即可防止免费服务器休眠，实现永久 24 小时不间断挂机！
