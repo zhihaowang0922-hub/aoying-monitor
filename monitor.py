@@ -4,7 +4,7 @@
 币安带单员【熬鹰资本】(Portfolio ID: 5075281354358777856) 云端/本地双用监控程序
 功能：
 1. 自动检测最新开平仓操作，并实时推送到 Telegram
-2. 内置轻量级 HTTP 健康检查服务，完美适配 Render / Zeabur 等免费云端平台 24 小时挂机
+2. 内置轻量级 HTTP 健康检查服务，完美适配 Railway 等云端平台 24 小时挂机
 """
 
 import json
@@ -45,24 +45,24 @@ STATUS_INFO = {
 
 
 class HealthHandler(BaseHTTPRequestHandler):
-    """为免费云平台（Render / Zeabur 等）和 UptimeRobot 保活提供网页状态响应"""
+    """为云平台提供健康检查网页"""
 
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
-        html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>熬鹰资本监控状态</title></head>
-<body style="font-family: sans-serif; max-width: 520px; margin: 40px auto; line-height: 1.6;">
-  <h2>✅ 【熬鹰资本】币安带单监控运行中</h2>
-  <p><b>运行状态：</b>{STATUS_INFO['status']}</p>
-  <p><b>启动时间：</b>{STATUS_INFO['started_at']} (UTC)</p>
-  <p><b>最近检测：</b>{STATUS_INFO['last_check']} (UTC)</p>
-  <p><b>累计推送新单：</b>{STATUS_INFO['orders_pushed']} 条</p>
-  <p style="color:#666;font-size:13px;">{STATUS_INFO['last_error']}</p>
-</body>
-</html>"""
+        html = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<title>熬鹰资本监控状态</title></head>"
+            "<body style='font-family:sans-serif;max-width:520px;margin:40px auto;line-height:1.6;'>"
+            "<h2>✅ 【熬鹰资本】币安带单监控运行中</h2>"
+            f"<p><b>运行状态：</b>{STATUS_INFO['status']}</p>"
+            f"<p><b>启动时间：</b>{STATUS_INFO['started_at']} (UTC)</p>"
+            f"<p><b>最近检测：</b>{STATUS_INFO['last_check']} (UTC)</p>"
+            f"<p><b>累计推送新单：</b>{STATUS_INFO['orders_pushed']} 条</p>"
+            f"<p style='color:#666;font-size:13px;'>{STATUS_INFO['last_error']}</p>"
+            "</body></html>"
+        )
         self.wfile.write(html.encode("utf-8"))
 
     def do_HEAD(self):
@@ -70,7 +70,6 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, format, *args):
-        # 屏蔽高频保活访问日志，保持后台日志清爽
         return
 
 
@@ -95,6 +94,7 @@ def is_cloud_env() -> bool:
         or os.environ.get("RENDER")
         or os.environ.get("ZEABUR")
         or os.environ.get("RAILWAY_ENVIRONMENT")
+        or os.environ.get("RAILWAY_PROJECT_ID")
     )
 
 
@@ -126,27 +126,19 @@ def load_config() -> dict:
 def save_config(cfg: dict) -> None:
     if is_cloud_env():
         return
-    content = (
-        "# 熬鹰资本币安带单监控配置文件
-"
-        f"TELEGRAM_BOT_TOKEN={cfg.get('TELEGRAM_BOT_TOKEN', '')}
-"
-        f"TELEGRAM_CHAT_ID={cfg.get('TELEGRAM_CHAT_ID', '')}
-"
-        f"PORTFOLIO_ID={cfg.get('PORTFOLIO_ID', DEFAULT_PORTFOLIO_ID)}
-"
-        f"POLL_INTERVAL={cfg.get('POLL_INTERVAL', '8')}
-"
-        f"PROXY={cfg.get('PROXY', '')}
-"
-        f"BINANCE_COOKIE={cfg.get('BINANCE_COOKIE', '')}
-"
-        f"BINANCE_CSRF_TOKEN={cfg.get('BINANCE_CSRF_TOKEN', '')}
-"
-    )
+    lines = [
+        "# 熬鹰资本币安带单监控配置文件",
+        f"TELEGRAM_BOT_TOKEN={cfg.get('TELEGRAM_BOT_TOKEN', '')}",
+        f"TELEGRAM_CHAT_ID={cfg.get('TELEGRAM_CHAT_ID', '')}",
+        f"PORTFOLIO_ID={cfg.get('PORTFOLIO_ID', DEFAULT_PORTFOLIO_ID)}",
+        f"POLL_INTERVAL={cfg.get('POLL_INTERVAL', '8')}",
+        f"PROXY={cfg.get('PROXY', '')}",
+        f"BINANCE_COOKIE={cfg.get('BINANCE_COOKIE', '')}",
+        f"BINANCE_CSRF_TOKEN={cfg.get('BINANCE_CSRF_TOKEN', '')}",
+    ]
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            f.write(content)
+            f.write("\n".join(lines) + "\n")
     except Exception:
         pass
 
@@ -201,7 +193,7 @@ def prepare_config(cfg: dict) -> dict:
     if is_cloud_env():
         while not token:
             STATUS_INFO["status"] = "缺少环境变量 TELEGRAM_BOT_TOKEN"
-            print("[配置提示] 请在云平台环境变量中填入 TELEGRAM_BOT_TOKEN 后重启服务。")
+            print("[配置提示] 请在云平台 Variables 中填入 TELEGRAM_BOT_TOKEN 后重新部署。")
             time.sleep(30)
             token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
             cfg["TELEGRAM_BOT_TOKEN"] = token
@@ -212,13 +204,11 @@ def prepare_config(cfg: dict) -> dict:
             print(f"✅ 已自动绑定你的 Telegram Chat ID: {chat_id}")
         return cfg
 
-    # 本地电脑交互模式
     if not token:
         print("=" * 52)
         print("   欢迎使用【熬鹰资本】币安带单 Telegram 监控程序")
         print("=" * 52)
-        token = input("
-请粘贴你的 Telegram Bot Token 后按回车键: ").strip()
+        token = input("请粘贴你的 Telegram Bot Token 后按回车键: ").strip()
         if not token:
             sys.exit(1)
         cfg["TELEGRAM_BOT_TOKEN"] = token
@@ -312,7 +302,7 @@ def fetch_order_history(cfg: dict, page_size: int = 20) -> list:
         proxies=get_proxies(cfg),
     )
     if resp.status_code == 451:
-        raise RuntimeError("HTTP 451: 当前云服务器所在国家/地区受币安限制，请更换为德国(Frankfurt)等欧洲节点！")
+        raise RuntimeError("HTTP 451: 当前云服务器地区受币安限制，请在 Settings -> Region 切换为 EU West (Amsterdam)！")
     resp.raise_for_status()
     res = resp.json()
     if not res.get("success", False):
@@ -332,7 +322,7 @@ def fetch_positions(cfg: dict) -> dict:
         proxies=get_proxies(cfg),
     )
     if resp.status_code == 451:
-        raise RuntimeError("HTTP 451: 当前云服务器所在国家/地区受币安限制，请更换为德国(Frankfurt)等欧洲节点！")
+        raise RuntimeError("HTTP 451: 当前云服务器地区受币安限制，请在 Settings -> Region 切换为 EU West (Amsterdam)！")
     resp.raise_for_status()
     res = resp.json()
     if not res.get("success", False):
@@ -418,8 +408,7 @@ def format_order_msg(order: dict) -> str:
         except Exception:
             pass
     lines.append(f"时间：{t_str} (UTC)")
-    return "
-".join(lines)
+    return "\n".join(lines)
 
 
 def diff_positions(old_pos: dict, new_pos: dict) -> list:
@@ -430,50 +419,39 @@ def diff_positions(old_pos: dict, new_pos: dict) -> list:
         curr = new_pos.get(key)
         if prev is None and curr is not None:
             side_cn = "🟢 开多 (LONG)" if curr["direction"] == "LONG" else "🔴 开空 (SHORT)"
-            msgs.append(
-                f"<b>【熬鹰资本 · 新开仓】</b>
-"
-                f"合约：<code>{curr['symbol']}</code>
-"
-                f"方向：{side_cn} ({curr['leverage']}x)
-"
-                f"持仓数量：{curr['amount']}
-"
-                f"开仓均价：{curr['entryPrice']}
-"
-                f"时间：{now_str}"
-            )
+            lines = [
+                "<b>【熬鹰资本 · 新开仓】</b>",
+                f"合约：<code>{curr['symbol']}</code>",
+                f"方向：{side_cn} ({curr['leverage']}x)",
+                f"持仓数量：{curr['amount']}",
+                f"开仓均价：{curr['entryPrice']}",
+                f"时间：{now_str}",
+            ]
+            msgs.append("\n".join(lines))
         elif prev is not None and curr is None:
             side_cn = "多单 (LONG)" if prev["direction"] == "LONG" else "空单 (SHORT)"
-            msgs.append(
-                f"<b>【熬鹰资本 · 全部平仓】</b>
-"
-                f"合约：<code>{prev['symbol']}</code>
-"
-                f"原方向：{side_cn}
-"
-                f"平仓前数量：{prev['amount']}
-"
-                f"原开仓均价：{prev['entryPrice']}
-"
-                f"时间：{now_str}"
-            )
+            lines = [
+                "<b>【熬鹰资本 · 全部平仓】</b>",
+                f"合约：<code>{prev['symbol']}</code>",
+                f"原方向：{side_cn}",
+                f"平仓前数量：{prev['amount']}",
+                f"原开仓均价：{prev['entryPrice']}",
+                f"时间：{now_str}",
+            ]
+            msgs.append("\n".join(lines))
         elif prev is not None and curr is not None:
             diff_amt = round(curr["amount"] - prev["amount"], 6)
             if abs(diff_amt) > 1e-8:
                 act = "➕ 加仓" if diff_amt > 0 else "➖ 部分减仓"
                 side_cn = "做多 (LONG)" if curr["direction"] == "LONG" else "做空 (SHORT)"
-                msgs.append(
-                    f"<b>【熬鹰资本 · {act}】</b>
-"
-                    f"合约：<code>{curr['symbol']}</code> ({side_cn})
-"
-                    f"数量变化：{prev['amount']} ➔ <b>{curr['amount']}</b> ({diff_amt:+g})
-"
-                    f"最新均价：{curr['entryPrice']}
-"
-                    f"时间：{now_str}"
-                )
+                lines = [
+                    f"<b>【熬鹰资本 · {act}】</b>",
+                    f"合约：<code>{curr['symbol']}</code> ({side_cn})",
+                    f"数量变化：{prev['amount']} ➔ <b>{curr['amount']}</b> ({diff_amt:+g})",
+                    f"最新均价：{curr['entryPrice']}",
+                    f"时间：{now_str}",
+                ]
+                msgs.append("\n".join(lines))
     return msgs
 
 
@@ -519,28 +497,24 @@ def main():
         STATUS_INFO["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         STATUS_INFO["last_error"] = ""
 
-        startup_msg = (
-            f"✅ <b>【熬鹰资本】云端监控已成功启动！</b>
-"
-            f"带单账号 ID：<code>{cfg['PORTFOLIO_ID']}</code>
-"
-            f"监控频率：每 {int(poll_interval)} 秒自动检测一次
-"
-            f"后续只要他有开多、开空、加减仓或平仓操作，这里会第一时间通知你。"
-        )
+        startup_lines = [
+            "✅ <b>【熬鹰资本】云端监控已成功启动！</b>",
+            f"带单账号 ID：<code>{cfg['PORTFOLIO_ID']}</code>",
+            f"监控频率：每 {int(poll_interval)} 秒自动检测一次",
+            "后续只要他有开多、开空、加减仓或平仓操作，这里会第一时间通知你。",
+        ]
         print("监控已成功启动！")
-        send_telegram(cfg, startup_msg)
+        send_telegram(cfg, "\n".join(startup_lines))
 
     except Exception as e:
         STATUS_INFO["status"] = "连接币安异常"
         STATUS_INFO["last_error"] = str(e)[:300]
-        err_text = (
-            f"⚠️ <b>【熬鹰资本监控】首次连接币安失败</b>
-"
-            f"错误详情：<code>{str(e)[:220]}</code>"
-        )
+        err_lines = [
+            "⚠️ <b>【熬鹰资本监控】首次连接币安失败</b>",
+            f"错误详情：<code>{str(e)[:220]}</code>",
+        ]
         print(f"启动检测异常: {e}")
-        send_telegram(cfg, err_text)
+        send_telegram(cfg, "\n".join(err_lines))
 
     consecutive_errors = 0
 
@@ -564,9 +538,7 @@ def main():
                         new_msgs.append(format_order_msg(order))
 
                 for m in new_msgs:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 推送新操作:
-{m}
-")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 推送新操作:\n{m}\n")
                     if send_telegram(cfg, m):
                         STATUS_INFO["orders_pushed"] += 1
 
@@ -581,9 +553,7 @@ def main():
 
                 new_msgs = diff_positions(old_positions, new_positions)
                 for m in new_msgs:
-                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 推送持仓变动:
-{m}
-")
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] 推送持仓变动:\n{m}\n")
                     if send_telegram(cfg, m):
                         STATUS_INFO["orders_pushed"] += 1
                 if new_msgs:
@@ -596,14 +566,12 @@ def main():
             STATUS_INFO["last_error"] = f"连续异常 #{consecutive_errors}: {str(e)[:200]}"
             print(f"[{datetime.now().strftime('%H:%M:%S')}] 轮询异常 (#{consecutive_errors}): {e}")
             if consecutive_errors == 5:
-                send_telegram(
-                    cfg,
-                    f"⚠️ <b>【监控异常提醒】</b>
-"
-                    f"连续 5 次获取币安数据失败。
-"
+                warn_lines = [
+                    "⚠️ <b>【监控异常提醒】</b>",
+                    "连续 5 次获取币安数据失败。",
                     f"错误信息：<code>{str(e)[:200]}</code>",
-                )
+                ]
+                send_telegram(cfg, "\n".join(warn_lines))
 
         time.sleep(poll_interval + random.uniform(-0.8, 1.2))
 
